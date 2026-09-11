@@ -17,7 +17,7 @@ desktop rather than a mirror of your laptop screen.
 ## What you get
 
 - A real extra output, not a mirror. Windows live on it and can be dragged across.
-- Its own set of desktops. Desktops 6 to 9 belong to the tablet by default.
+- Its own set of desktops. The laptop keeps 1 to 5, the tablet gets 6 to 10.
 - Unplug and those desktops walk back to the laptop, windows and layout intact, so nothing
   is ever stranded on a screen you cannot see.
 - Plug back in and they walk back to the tablet.
@@ -72,7 +72,7 @@ SIDECAR_SERIAL=R52Y80JPFFE        # required
 SIDECAR_LAPTOP=eDP-1              # your built-in screen
 SIDECAR_MODE=2960x1848@60         # your tablet's native resolution
 SIDECAR_SCALE=2                   # 2 suits a high-density tablet
-SIDECAR_WS_SET="6 7 8 9"          # desktops that belong to the tablet
+SIDECAR_WS_SET="6 7 8 9 10"       # desktops that belong to the tablet
 ```
 
 Check it before trusting it:
@@ -109,8 +109,8 @@ tablet's own display settings.
 | `SUPER + SHIFT + 7` | send the focused window to tablet desktop 7 |
 | `SUPER + 7` | look at tablet desktop 7 |
 
-Plug the cable in and desktops 6 to 9 appear on the tablet. Pull it out and they come back
-to the laptop, still reachable with `SUPER + 6` through `SUPER + 9`.
+Plug the cable in and desktops 6 to 10 appear on the tablet. Pull it out and they come back
+to the laptop, still reachable with `SUPER + 6` through `SUPER + 0`.
 
 `sidecar-display status` shows what is running.
 

@@ -22,7 +22,8 @@ LAPTOP=${SIDECAR_LAPTOP:-eDP-1}            # your built-in screen, from `hyprctl
 MODE=${SIDECAR_MODE:-2960x1848@60}
 SCALE=${SIDECAR_SCALE:-2}
 PORT=${SIDECAR_PORT:-5900}
-WS_SET=${SIDECAR_WS_SET:-"6 7 8 9"}
+WS_SET=${SIDECAR_WS_SET:-"6 7 8 9 10"}     # desktops that belong to the tablet
+LAPTOP_WS_SET=${SIDECAR_LAPTOP_WS_SET:-"1 2 3 4 5"}  # desktops pinned to the laptop
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/sidecar-display"
 ADB=${ADB:-adb}                            # set a full path here if adb is not on PATH
 
@@ -56,9 +57,27 @@ up() {
   local n=0; until has_out || [ $n -ge 20 ]; do sleep 0.1; n=$((n+1)); done
   has_out || { echo "sidecar: output never appeared" >&2; return 1; }
 
-  # These desktops belong to the tablet. Declaring it is all the "memory" needed.
+  # Split the desktops between the screens. Declaring it is all the "memory"
+  # needed: Hyprland walks them off when the output goes and back when it returns.
+  # persistent keeps the tablet's five on show even while empty, so its bar always
+  # reads the same. The laptop's five need no persistence, the bar already pads them.
+  for w in $LAPTOP_WS_SET; do
+    hyprctl eval "hl.workspace_rule({workspace=\"$w\", monitor=\"$LAPTOP\"})" >/dev/null
+  done
   for w in $WS_SET; do
-    hyprctl eval "hl.workspace_rule({workspace=\"$w\", monitor=\"$OUT\"})" >/dev/null
+    hyprctl eval "hl.workspace_rule({workspace=\"$w\", monitor=\"$OUT\", persistent=true})" >/dev/null
+  done
+
+  # A rule only decides where a desktop is born. Anything already sitting on the
+  # wrong screen has to be walked over once, or the split is only true for
+  # desktops created from here on.
+  for w in $LAPTOP_WS_SET; do
+    [ "$(hyprctl workspaces -j | jq -r --argjson n "$w" '.[]|select(.id==$n)|.monitor')" = "$OUT" ] \
+      && hyprctl dispatch "hl.dsp.workspace.move({workspace=$w, monitor=\"$LAPTOP\"})" >/dev/null
+  done
+  for w in $WS_SET; do
+    [ "$(hyprctl workspaces -j | jq -r --argjson n "$w" '.[]|select(.id==$n)|.monitor')" = "$LAPTOP" ] \
+      && hyprctl dispatch "hl.dsp.workspace.move({workspace=$w, monitor=\"$OUT\"})" >/dev/null
   done
 
   # VNC is TCP, so it rides the adb tunnel. No USB tethering (it does not survive a
@@ -73,6 +92,12 @@ up() {
 }
 
 down() {
+  # Drop persistence first, or the tablet's empty desktops follow the windows home
+  # and clutter the laptop's bar with slots that have nothing in them.
+  local w
+  for w in $WS_SET; do
+    hyprctl eval "hl.workspace_rule({workspace=\"$w\", monitor=\"$OUT\", persistent=false})" >/dev/null
+  done
   pkill -x wayvnc 2>/dev/null
   "$ADB" reverse --remove "tcp:$PORT" >/dev/null 2>&1
   has_out && hyprctl output remove "$OUT" >/dev/null   # Hyprland walks the desktops home

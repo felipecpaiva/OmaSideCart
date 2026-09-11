@@ -12,8 +12,12 @@ SIDECAR_MODE=2960x1848@60
 # 2 suits a high-density tablet. Use 1 for a low-density one.
 SIDECAR_SCALE=2
 
-# Desktops that belong to the tablet.
-SIDECAR_WS_SET="6 7 8 9"
+# Desktops that belong to the tablet. Kept alive even when empty, so the
+# tablet bar always reads the same.
+SIDECAR_WS_SET="6 7 8 9 10"
+
+# Desktops pinned to the laptop.
+SIDECAR_LAPTOP_WS_SET="1 2 3 4 5"
 
 # VNC port, tunnelled over the cable and bound to loopback.
 SIDECAR_PORT=5900
