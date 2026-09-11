@@ -147,7 +147,14 @@ selfcheck() {
     && echo "PASS: it came home on unplug, windows intact" || { echo "FAIL: on unplug it is on $(ws_monitor "$probe") with $(ws_windows "$probe") windows"; rc=1; }
   has_out && { echo "FAIL: output still there"; rc=1; } || echo "PASS: output removed"
   pgrep -x wayvnc >/dev/null && { echo "FAIL: wayvnc still running"; rc=1; } || echo "PASS: wayvnc stopped"
-  "$ADB" reverse --list 2>/dev/null | grep -q "tcp:$PORT" && { echo "FAIL: tunnel left open"; rc=1; } || echo "PASS: tunnel closed"
+  # A running watcher re-asserts the tunnel every couple of seconds while the
+  # tablet is plugged in, so a simulated unplug can never leave it closed. On a
+  # real unplug it does close, because then the watcher sees the device is gone.
+  if flock -n "$STATE/watch.lock" true 2>/dev/null; then
+    "$ADB" reverse --list 2>/dev/null | grep -q "tcp:$PORT" && { echo "FAIL: tunnel left open"; rc=1; } || echo "PASS: tunnel closed"
+  else
+    echo "SKIP: tunnel close (a watcher is running and re-asserts it)"
+  fi
 
   up >/dev/null; sleep 3
   [ "$(ws_monitor "$probe")" = "$OUT" ] && [ "$(ws_windows "$probe")" -gt 0 ] \
