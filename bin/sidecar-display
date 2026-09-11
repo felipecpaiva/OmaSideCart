@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# sidecar-display - an Android tablet as an automatic second monitor.
+#
+# The tablet owns its own set of desktops (WS_SET). Hyprland walks those desktops
+# to the laptop when the cable goes and brings them back when it returns, windows
+# and layout intact, so nothing here has to remember anything.
+#
+#   watch  follow the USB cable and run up/down (systemd user service)
+#   up     create the output, tunnel it over adb, stream it, show it on the tablet
+#   down   stop streaming and remove the output
+set -uo pipefail
+
+# Read the config first, so its values feed the defaults below.
+# shellcheck source=/dev/null
+CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/sidecar-display/config"
+[ -r "$CONFIG" ] && . "$CONFIG"
+
+OUT=sidecar
+# Settings. Override any of these in ~/.config/sidecar-display/config
+SERIAL=${SIDECAR_SERIAL:-}                 # tablet USB serial, required (see README)
+LAPTOP=${SIDECAR_LAPTOP:-eDP-1}            # your built-in screen, from `hyprctl monitors`
+MODE=${SIDECAR_MODE:-2960x1848@60}
+SCALE=${SIDECAR_SCALE:-2}
+PORT=${SIDECAR_PORT:-5900}
+WS_SET=${SIDECAR_WS_SET:-"6 7 8 9"}
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/sidecar-display"
+ADB=${ADB:-adb}                            # set a full path here if adb is not on PATH
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-1}"
+export HYPRLAND_INSTANCE_SIGNATURE="${HYPRLAND_INSTANCE_SIGNATURE:-$(ls -t "$XDG_RUNTIME_DIR/hypr/" 2>/dev/null | head -1)}"
+mkdir -p "$STATE"
+
+[ -n "$SERIAL" ] || { echo "sidecar-display: set SIDECAR_SERIAL (see README)" >&2; exit 2; }
+
+# Match the serial, not the interface or port: both change between USB sockets.
+plugged() {
+  local f
+  for f in /sys/bus/usb/devices/*/serial; do
+    [ -r "$f" ] && [ "$(cat "$f" 2>/dev/null)" = "$SERIAL" ] && return 0
+  done
+  return 1
+}
+
+has_out() { hyprctl monitors -j | jq -e --arg o "$OUT" 'any(.[]; .name==$o)' >/dev/null 2>&1; }
+ws_monitor() { hyprctl workspaces -j | jq -r --argjson w "$1" '.[]|select(.id==$w)|.monitor'; }
+ws_windows() { hyprctl workspaces -j | jq -r --argjson w "$1" '.[]|select(.id==$w)|.windows // 0'; }
+
+up() {
+  local w
+  has_out || hyprctl output create headless "$OUT" >/dev/null
+  # Pin the laptop panel: Omarchy's catch-all monitor rule leaves new outputs on position=auto
+  # and will reposition the laptop panel underneath us.
+  hyprctl eval "hl.monitor({output=\"$LAPTOP\", position=\"0x0\"})" >/dev/null
+  hyprctl eval "hl.monitor({output=\"$OUT\", mode=\"$MODE\", position=\"auto-right\", scale=$SCALE})" >/dev/null
+  local n=0; until has_out || [ $n -ge 20 ]; do sleep 0.1; n=$((n+1)); done
+  has_out || { echo "sidecar: output never appeared" >&2; return 1; }
+
+  # These desktops belong to the tablet. Declaring it is all the "memory" needed.
+  for w in $WS_SET; do
+    hyprctl eval "hl.workspace_rule({workspace=\"$w\", monitor=\"$OUT\"})" >/dev/null
+  done
+
+  # VNC is TCP, so it rides the adb tunnel. No USB tethering (it does not survive a
+  # replug) and no firewall hole: wayvnc listens on loopback only.
+  "$ADB" reverse "tcp:$PORT" "tcp:$PORT" >/dev/null 2>&1
+  pgrep -x wayvnc >/dev/null || setsid wayvnc --output="$OUT" --max-fps=60 127.0.0.1 "$PORT" >"$STATE/wayvnc.log" 2>&1 9>&- &
+  sleep 1
+
+  "$ADB" shell input keyevent KEYCODE_WAKEUP >/dev/null 2>&1
+  "$ADB" shell am start -a android.intent.action.VIEW -d "vnc://127.0.0.1:$PORT" >/dev/null 2>&1
+  return 0
+}
+
+down() {
+  pkill -x wayvnc 2>/dev/null
+  "$ADB" reverse --remove "tcp:$PORT" >/dev/null 2>&1
+  has_out && hyprctl output remove "$OUT" >/dev/null   # Hyprland walks the desktops home
+  return 0
+}
+
+watch() {
+  # One watcher only. Two of them fight and leave the screen half up.
+  exec 9>"$STATE/watch.lock"
+  flock -n 9 || { echo "sidecar: another watcher holds the lock" >&2; exit 0; }
+  local was=unknown now
+  trap 'down; exit 0' TERM INT
+  while :; do
+    if plugged; then now=yes; else now=no; fi
+    if [ "$now" != "$was" ]; then
+      if [ "$now" = yes ]; then up; else down; fi
+      was=$now
+    fi
+    sleep 2
+  done
+}
+
+# The runnable check. Covers everything except the physical cable.
+selfcheck() {
+  local rc=0 probe; probe=$(echo "$WS_SET" | awk '{print $1}')
+  up || { echo "FAIL: up"; return 1; }
+  hyprctl monitors -j | jq -e --arg o "$OUT" --argjson w "${MODE%%x*}" 'any(.[]; .name==$o and .width==$w)' >/dev/null \
+    && echo "PASS: $OUT is ${MODE%%x*} wide" || { echo "FAIL: $OUT wrong width"; rc=1; }
+  pgrep -x wayvnc >/dev/null && echo "PASS: wayvnc is streaming" || { echo "FAIL: wayvnc not running"; rc=1; }
+  ss -tlnp 2>/dev/null | grep -q "127.0.0.1:$PORT" && echo "PASS: wayvnc is loopback-only" || { echo "FAIL: wayvnc not on loopback"; rc=1; }
+  "$ADB" reverse --list 2>/dev/null | grep -q "tcp:$PORT tcp:$PORT" && echo "PASS: adb tunnel is open" || { echo "FAIL: no adb tunnel"; rc=1; }
+
+  # A window opened on a tablet desktop must be born on the tablet.
+  hyprctl dispatch "hl.dsp.exec_cmd(\"[workspace $probe silent] foot -T sidecar-selfcheck\")" >/dev/null; sleep 3
+  [ "$(ws_monitor "$probe")" = "$OUT" ] && [ "$(ws_windows "$probe")" -gt 0 ] \
+    && echo "PASS: desktop $probe opened on the tablet" || { echo "FAIL: desktop $probe is on $(ws_monitor "$probe")"; rc=1; }
+  [ "$(hyprctl activewindow -j | jq -r '.monitor // 0')" = "0" ] \
+    && echo "PASS: focus stayed on the laptop" || { echo "FAIL: focus jumped to the tablet"; rc=1; }
+
+  down; sleep 2
+  [ "$(ws_monitor "$probe")" = "$LAPTOP" ] && [ "$(ws_windows "$probe")" -gt 0 ] \
+    && echo "PASS: it came home on unplug, windows intact" || { echo "FAIL: on unplug it is on $(ws_monitor "$probe") with $(ws_windows "$probe") windows"; rc=1; }
+  has_out && { echo "FAIL: output still there"; rc=1; } || echo "PASS: output removed"
+  pgrep -x wayvnc >/dev/null && { echo "FAIL: wayvnc still running"; rc=1; } || echo "PASS: wayvnc stopped"
+  "$ADB" reverse --list 2>/dev/null | grep -q "tcp:$PORT" && { echo "FAIL: tunnel left open"; rc=1; } || echo "PASS: tunnel closed"
+
+  up >/dev/null; sleep 3
+  [ "$(ws_monitor "$probe")" = "$OUT" ] && [ "$(ws_windows "$probe")" -gt 0 ] \
+    && echo "PASS: it went back to the tablet on replug" || { echo "FAIL: on replug it is on $(ws_monitor "$probe")"; rc=1; }
+  pgrep -x Hyprland >/dev/null && echo "PASS: compositor survived" || { echo "FAIL: Hyprland died"; rc=1; }
+
+  hyprctl clients -j | jq -r '.[]|select(.class=="foot")|.pid' | xargs -r kill 2>/dev/null
+  return $rc
+}
+
+case "${1:-}" in
+  up) up ;;
+  down) down ;;
+  watch) watch ;;
+  selfcheck) selfcheck ;;
+  status)
+    plugged && echo "tablet:          plugged" || echo "tablet:          unplugged"
+    has_out && echo "output:          up" || echo "output:          down"
+    pgrep -x wayvnc >/dev/null && echo "wayvnc:          running" || echo "wayvnc:          stopped"
+    "$ADB" reverse --list 2>/dev/null | grep -q "tcp:$PORT" && echo "tunnel:          open" || echo "tunnel:          closed"
+    echo "tablet desktops: $WS_SET" ;;
+  *) echo "usage: sidecar-display {up|down|watch|selfcheck|status}" >&2; exit 2 ;;
+esac

@@ -1,0 +1,22 @@
+# Copy to ~/.config/sidecar-display/config and edit.
+
+# Required. Your tablet's USB serial, from `adb devices`.
+SIDECAR_SERIAL=
+
+# Your built-in screen, from `hyprctl monitors`.
+SIDECAR_LAPTOP=eDP-1
+
+# Your tablet's native resolution and refresh rate.
+SIDECAR_MODE=2960x1848@60
+
+# 2 suits a high-density tablet. Use 1 for a low-density one.
+SIDECAR_SCALE=2
+
+# Desktops that belong to the tablet.
+SIDECAR_WS_SET="6 7 8 9"
+
+# VNC port, tunnelled over the cable and bound to loopback.
+SIDECAR_PORT=5900
+
+# Path to adb, if it is not on PATH for systemd user services.
+# ADB=/usr/bin/adb
