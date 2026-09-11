@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.felipecpaiva.omasidecart",
+  "name": "OmaSideCart",
+  "version": "0.1.0",
+  "author": "felipecpaiva",
+  "license": "MIT",
+  "description": "Use an Android tablet as an automatic second monitor over the USB cable. The bar icon appears only while the tablet is plugged in, shows whether it is streaming, and toggles it.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Widget.qml"
+  },
+  "barWidget": {
+    "displayName": "SideCart",
+    "description": "Shows whether the tablet second monitor is connected and streaming. Click to start or stop it. Hidden entirely when no tablet is plugged in.",
+    "category": "Hardware",
+    "aliases": ["sidecart", "tablet-display"],
+    "allowMultiple": false
+  }
+}

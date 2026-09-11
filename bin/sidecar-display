@@ -170,11 +170,17 @@ case "${1:-}" in
   down) down ;;
   watch) watch ;;
   selfcheck) selfcheck ;;
+  state)
+    # One word, for the bar widget to poll cheaply.
+    if ! plugged; then echo away
+    elif has_out && pgrep -x wayvnc >/dev/null; then echo streaming
+    else echo plugged
+    fi ;;
   status)
     plugged && echo "tablet:          plugged" || echo "tablet:          unplugged"
     has_out && echo "output:          up" || echo "output:          down"
     pgrep -x wayvnc >/dev/null && echo "wayvnc:          running" || echo "wayvnc:          stopped"
     "$ADB" reverse --list 2>/dev/null | grep -q "tcp:$PORT" && echo "tunnel:          open" || echo "tunnel:          closed"
     echo "tablet desktops: $WS_SET" ;;
-  *) echo "usage: sidecar-display {up|down|watch|selfcheck|status}" >&2; exit 2 ;;
+  *) echo "usage: sidecar-display {up|down|watch|selfcheck|status|state}" >&2; exit 2 ;;
 esac
