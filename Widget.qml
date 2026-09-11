@@ -14,9 +14,12 @@ BarWidget {
   // property in ways that do not announce themselves.
   property string sidecarState: "away"
 
-  // Resolved through a shell so ~/.local/bin is found without assuming the
-  // compositor's PATH includes it.
-  readonly property string cmd: "$HOME/.local/bin/sidecar-display"
+  // Prefer an installed copy, fall back to the one shipped beside this file.
+  // Installing only the plugin would otherwise leave a widget with no engine,
+  // which shows up as an icon that never appears rather than as an error.
+  readonly property string pluginBin: String(Qt.resolvedUrl("bin/sidecar-display")).replace(/^file:\/\//, "")
+  readonly property string cmd:
+    "S=$HOME/.local/bin/sidecar-display; [ -x \"$S\" ] || S='" + pluginBin + "'; \"$S\""
 
   // Nothing plugged in means nothing to say, so take no room on the bar.
   visible: sidecarState !== "away"
