@@ -88,6 +88,20 @@ replug cycle. Then turn it on:
 systemctl --user enable --now sidecar-display.service
 ```
 
+## Settings on the tablet
+
+Two AVNC settings are worth changing once:
+
+- **Settings, Input, Mouse, "Hide local pointer": on.** wayvnc is started with
+  `--render-cursor`, so the real cursor is already drawn into the picture. Left on,
+  AVNC also draws its own pointer, which sits in the corner until you touch the
+  screen and then trails your finger around.
+- **Settings, Viewer, "Keep screen ON": on.** It is on by default.
+
+If the screen still dims, that is the tablet, not this. Samsung's adaptive brightness
+pulls the backlight down on a mostly dark desktop. Turn off adaptive brightness in the
+tablet's own display settings.
+
 ## Use
 
 | Key | What it does |
