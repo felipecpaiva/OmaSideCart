@@ -64,7 +64,7 @@ up() {
   # VNC is TCP, so it rides the adb tunnel. No USB tethering (it does not survive a
   # replug) and no firewall hole: wayvnc listens on loopback only.
   "$ADB" reverse "tcp:$PORT" "tcp:$PORT" >/dev/null 2>&1
-  pgrep -x wayvnc >/dev/null || setsid wayvnc --output="$OUT" --max-fps=60 127.0.0.1 "$PORT" >"$STATE/wayvnc.log" 2>&1 9>&- &
+  pgrep -x wayvnc >/dev/null || setsid wayvnc --output="$OUT" --max-fps=60 --render-cursor 127.0.0.1 "$PORT" >"$STATE/wayvnc.log" 2>&1 9>&- &
   sleep 1
 
   "$ADB" shell input keyevent KEYCODE_WAKEUP >/dev/null 2>&1
@@ -90,6 +90,11 @@ watch() {
     if [ "$now" != "$was" ]; then
       if [ "$now" = yes ]; then up; else down; fi
       was=$now
+    elif [ "$now" = yes ]; then
+      # The tunnel dies with the adb server, which can restart on its own while
+      # the cable never moves. Nothing upstream notices, so re-assert it. adb
+      # reverse is idempotent, so this is a no-op whenever it is already there.
+      "$ADB" reverse "tcp:$PORT" "tcp:$PORT" >/dev/null 2>&1
     fi
     sleep 2
   done
