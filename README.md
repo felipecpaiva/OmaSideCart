@@ -92,7 +92,7 @@ tick "always allow".
 ### 2. Find your two values
 
 ```sh
-adb devices                      # the first column is your serial, e.g. R52Y80JPFFE
+adb devices                      # the first column is your serial, e.g. R5XT0AB1CDE
 hyprctl monitors | grep Monitor  # your built-in screen, usually eDP-1
 ```
 
@@ -104,7 +104,7 @@ was never accepted.
 Copy `config.example` to `~/.config/sidecar-display/config` and fill it in:
 
 ```sh
-SIDECAR_SERIAL=R52Y80JPFFE        # required, from `adb devices`
+SIDECAR_SERIAL=R5XT0AB1CDE        # required, from `adb devices`
 SIDECAR_LAPTOP=eDP-1              # your built-in screen
 SIDECAR_MODE=2960x1848@60         # your tablet's native resolution
 SIDECAR_SCALE=2                   # 2 suits a high-density tablet, 1 a low-density one
