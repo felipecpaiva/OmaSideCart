@@ -47,6 +47,14 @@ On Arch, `wayvnc jq android-tools` are all in the official repos.
 
 ## Install
 
+There are two halves, and you can take one or both.
+
+- **The service** is the part that does the work. Nothing on the bar is required.
+- **The bar widget** is optional. It shows whether the tablet is streaming and toggles it.
+
+### The service
+
+
 ```sh
 git clone https://github.com/felipecpaiva/OmaSideCart.git
 cd OmaSideCart
@@ -55,6 +63,21 @@ cd OmaSideCart
 
 That copies `bin/sidecar-display` into `~/.local/bin` and the unit into
 `~/.config/systemd/user`. It enables nothing and configures nothing.
+
+### The bar widget (optional)
+
+```sh
+omarchy plugin add https://github.com/felipecpaiva/OmaSideCart.git --enable
+omarchy-restart-shell
+```
+
+![The widget on the bar](preview.png)
+
+The icon is **hidden** when no tablet is plugged in, **dim** when one is connected but not
+streaming, and **bright** while it streams. Clicking it starts or stops the stream.
+
+It reads `sidecar-display state`, so it needs the service installed above. Remove it with
+`omarchy plugin remove io.github.felipecpaiva.omasidecart`.
 
 ## Set up, step by step
 
@@ -180,8 +203,8 @@ lives, so there is nothing that can drift out of step with it.
   the same output because they read through shared memory instead.
 - **USB tethering is deliberately unused.** Android drops it on every replug, which makes
   anything built on it fail silently.
-- **This is not an Omarchy shell plugin.** It is a standalone service, so it does not
-  install through `omarchy plugin add` and is not listed in the plugin marketplace.
+- **The service does the work, the widget only reports it.** Removing the widget changes
+  nothing about how the second screen behaves.
 
 ## Uninstall
 
