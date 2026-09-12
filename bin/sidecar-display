@@ -47,6 +47,13 @@ plugged() {
 has_out() { hyprctl monitors -j | jq -e --arg o "$OUT" 'any(.[]; .name==$o)' >/dev/null 2>&1; }
 ws_monitor() { hyprctl workspaces -j | jq -r --argjson w "$1" '.[]|select(.id==$w)|.monitor'; }
 ws_windows() { hyprctl workspaces -j | jq -r --argjson w "$1" '.[]|select(.id==$w)|.windows // 0'; }
+tunnel_open() { "$ADB" reverse --list 2>/dev/null | grep -q "tcp:$PORT tcp:$PORT"; }
+streaming() { pgrep -x wayvnc >/dev/null; }
+# The tablet only has the picture while its viewer holds the VNC socket open. Nothing
+# else here tells a viewer that is showing apart from one the user has closed.
+viewing() { [ -n "$(ss -tnH state established "sport = :$PORT" 2>/dev/null)" ]; }
+# What "up" means, read off the system rather than remembered from the last pass.
+ready() { has_out && streaming && tunnel_open; }
 
 up() {
   local w
@@ -84,12 +91,19 @@ up() {
   # VNC is TCP, so it rides the adb tunnel. No USB tethering (it does not survive a
   # replug) and no firewall hole: wayvnc listens on loopback only.
   "$ADB" reverse "tcp:$PORT" "tcp:$PORT" >/dev/null 2>&1
-  pgrep -x wayvnc >/dev/null || setsid wayvnc --output="$OUT" --max-fps="$FPS" --render-cursor 127.0.0.1 "$PORT" >"$STATE/wayvnc.log" 2>&1 9>&- &
-  sleep 1
+  tunnel_open || { echo "sidecar: adb tunnel did not open" >&2; return 1; }
 
+  streaming || setsid wayvnc --output="$OUT" --max-fps="$FPS" --render-cursor 127.0.0.1 "$PORT" >"$STATE/wayvnc.log" 2>&1 9>&- &
+  n=0; until streaming || [ $n -ge 20 ]; do sleep 0.1; n=$((n+1)); done
+  streaming || { echo "sidecar: wayvnc did not start" >&2; return 1; }
+  return 0
+}
+
+# Point the tablet at the stream. Kept out of up() because up() now runs on every pass,
+# and the tablet may be showing something else because that is what the user wanted.
+show() {
   "$ADB" shell input keyevent KEYCODE_WAKEUP >/dev/null 2>&1
   "$ADB" shell am start -a android.intent.action.VIEW -d "vnc://127.0.0.1:$PORT" >/dev/null 2>&1
-  return 0
 }
 
 down() {
@@ -109,20 +123,46 @@ watch() {
   # One watcher only. Two of them fight and leave the screen half up.
   exec 9>"$STATE/watch.lock"
   flock -n 9 || { echo "sidecar: another watcher holds the lock" >&2; exit 0; }
-  local was=unknown now
+  # Pointing the tablet at the stream is spaced out and bounded. The viewer needs a
+  # few seconds to launch and connect, so asking every pass would restart the app
+  # underneath itself and never let it settle. Once it has connected even once, a
+  # viewer that goes away was closed on purpose and must not be dragged back.
+  # ponytail: it stops asking after giveup seconds, so a cable plugged in only to
+  # charge is left alone. Raise it if a slow tablet is still waking up past that.
+  local nap=2 seen=0 lastshow=0 since=0 gap=10 giveup=120 now
   trap 'down; exit 0' TERM INT
   while :; do
-    if plugged; then now=yes; else now=no; fi
-    if [ "$now" != "$was" ]; then
-      if [ "$now" = yes ]; then up; else down; fi
-      was=$now
-    elif [ "$now" = yes ]; then
-      # The tunnel dies with the adb server, which can restart on its own while
-      # the cable never moves. Nothing upstream notices, so re-assert it. adb
-      # reverse is idempotent, so this is a no-op whenever it is already there.
-      "$ADB" reverse "tcp:$PORT" "tcp:$PORT" >/dev/null 2>&1
+    if plugged; then
+      # Compare against what is true now, never against what the last pass did. A step
+      # that failed because Hyprland or adb was not up yet is retried here until it
+      # takes, so a start that half worked no longer waits for a physical replug. This
+      # also re-asserts the tunnel, which dies whenever the adb server restarts on its
+      # own while the cable never moves.
+      if ready; then
+        nap=2
+        now=$(date +%s)
+        [ "$since" = 0 ] && since=$now
+        if viewing; then seen=1
+        elif [ "$seen" = 0 ] && [ $((now - since)) -lt "$giveup" ] && [ $((now - lastshow)) -ge "$gap" ]; then
+          show; lastshow=$now
+        fi
+      elif up; then
+        # The stream was gone, so whatever the tablet was showing died with it. That is
+        # not the user closing the viewer, and the give-up clock has to start again too.
+        seen=0; since=0; nap=2
+      else
+        seen=0; since=0
+        # up said on stderr which step failed. Back off, or a machine that cannot
+        # recover writes that same line into the journal every couple of seconds.
+        nap=$((nap < 60 ? nap * 2 : nap))
+      fi
+    else
+      # Not ready is not the same as nothing to tear down: a half up sidecar still
+      # owns an output and a wayvnc.
+      if has_out || streaming; then down; fi
+      seen=0; lastshow=0; since=0; nap=2
     fi
-    sleep 2
+    sleep "$nap"
   done
 }
 
@@ -167,7 +207,7 @@ selfcheck() {
 }
 
 case "${1:-}" in
-  up) up ;;
+  up) up && show ;;
   down) down ;;
   watch) watch ;;
   selfcheck) selfcheck ;;

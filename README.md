@@ -158,7 +158,8 @@ Unplug and the box comes back to the laptop, still reachable with `SUPER + 6` th
 
 ```sh
 sidecar-display status      # plugged, output, stream, tunnel, desktops
-sidecar-display selfcheck   # the twelve assertions
+sidecar-display selfcheck   # the twelve assertions, needs the tablet
+./test-reconcile.sh         # does it recover on its own? all faked, safe anywhere
 sidecar-display up          # do it by hand
 sidecar-display down
 ```
@@ -167,15 +168,19 @@ sidecar-display down
 
 1. A systemd user service watches `/sys/bus/usb/devices/*/serial` for your tablet. Matching
    the serial rather than an interface name means any USB port works.
-2. On connect it creates a headless Hyprland output, sizes it to the tablet, and splits the
-   desktops between the screens with `hl.workspace_rule`. Hyprland owns the rest: it moves
-   those desktops off when the output goes and back when it returns.
+2. While it is plugged in, every couple of seconds the watcher compares what should be
+   true against what is actually true, and closes the gap. It creates a headless Hyprland
+   output, sizes it to the tablet, and splits the desktops between the screens with
+   `hl.workspace_rule`. Hyprland owns the rest: it moves those desktops off when the output
+   goes and back when it returns. Nothing is remembered as done, so a step that failed
+   because Hyprland or adb was not up yet is simply retried on the next pass.
 3. `wayvnc` captures that output on `127.0.0.1`, and `adb reverse` tunnels the port down the
    cable, so the tablet reaches it at `vnc://127.0.0.1:5900`.
 4. On disconnect it stops the server, closes the tunnel, and removes the output.
 
 There is no state file. The compositor is the only thing that remembers where a desktop
-lives, so there is nothing that can drift out of step with it.
+lives, so there is nothing that can drift out of step with it. The watcher remembers nothing
+either, which is why booting with the cable already in behaves the same as plugging it in.
 
 ## When something is wrong
 
