@@ -22,6 +22,7 @@ LAPTOP=${SIDECAR_LAPTOP:-eDP-1}            # your built-in screen, from `hyprctl
 MODE=${SIDECAR_MODE:-2960x1848@60}
 SCALE=${SIDECAR_SCALE:-2}
 PORT=${SIDECAR_PORT:-5900}
+FPS=${SIDECAR_FPS:-30}                       # 30 is plenty for a desktop; 60 doubles the data for no gain
 WS_SET=${SIDECAR_WS_SET:-"6 7 8 9 10"}     # desktops that belong to the tablet
 LAPTOP_WS_SET=${SIDECAR_LAPTOP_WS_SET:-"1 2 3 4 5"}  # desktops pinned to the laptop
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/sidecar-display"
@@ -83,7 +84,7 @@ up() {
   # VNC is TCP, so it rides the adb tunnel. No USB tethering (it does not survive a
   # replug) and no firewall hole: wayvnc listens on loopback only.
   "$ADB" reverse "tcp:$PORT" "tcp:$PORT" >/dev/null 2>&1
-  pgrep -x wayvnc >/dev/null || setsid wayvnc --output="$OUT" --max-fps=60 --render-cursor 127.0.0.1 "$PORT" >"$STATE/wayvnc.log" 2>&1 9>&- &
+  pgrep -x wayvnc >/dev/null || setsid wayvnc --output="$OUT" --max-fps="$FPS" --render-cursor 127.0.0.1 "$PORT" >"$STATE/wayvnc.log" 2>&1 9>&- &
   sleep 1
 
   "$ADB" shell input keyevent KEYCODE_WAKEUP >/dev/null 2>&1
