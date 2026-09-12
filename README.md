@@ -191,9 +191,27 @@ lives, so there is nothing that can drift out of step with it.
 
 ## Things worth knowing
 
-- **VNC has no hardware video encoding.** Text, terminals and documents are comfortable.
-  Full screen video is heavier. On an Intel Iris Xe, a whole 2960x1848 screen changing ten
-  times a second costs about 23% of one core, and an idle screen costs nothing.
+- **Every frame is a full frame.** A headless output reports 100% damage on every frame, so
+  VNC's usual trick of sending only what changed buys nothing here. The cost is simply
+  resolution times frame rate. Measured on an Intel Iris Xe under constant full-screen
+  change:
+
+  | Output | Pixels/frame | wayvnc CPU |
+  |---|---|---|
+  | 2960x1848 @ 60fps | 5.47 Mpx | 71% of one core |
+  | 2960x1848 @ 30fps | 5.47 Mpx | 55% of one core |
+  | 1480x924 @ 60fps | 1.36 Mpx | 19% of one core |
+
+  A **still** screen costs nothing at all: zero frames, zero CPU. Only motion is expensive.
+  The default cap is 30fps (`SIDECAR_FPS`), because the frames arrive at 30 anyway and 60
+  just doubles the work. Halving the resolution is the biggest lever left, at the cost of
+  the tablet upscaling, which looks noticeably soft.
+- **`wayvnc --gpu` does nothing here.** wayvnc can do H.264 and is linked for it, but the
+  *client* picks the encoding and AVNC negotiates `tight` (JPEG on the CPU). A server flag
+  cannot override a client that never asks.
+- **The USB link is usually not the bottleneck.** Measured 121 Mbps against roughly 300
+  Mbps of practical USB 2 capacity. Check before blaming the cable:
+  `ss -tinp | grep -A1 'users:(("wayvnc"'` and sample `bytes_sent` twice.
 - **Sunshine and Moonlight do not work for this**, which is a shame, because they do have
   hardware encoding. Sunshine finds a Hyprland headless output and selects it correctly,
   then fails to read its pixels (`EGL_BAD_MATCH`), because a virtual output has no GPU
