@@ -300,6 +300,36 @@ case "${1:-}" in
   down) down ;;
   watch) watch ;;
   selfcheck) selfcheck ;;
+  audio-toggle)
+    # Flip the desktop between the tablet and whatever real output is next best, and
+    # take the playing streams with it. Sound and picture reach the tablet by separate
+    # paths with no clock between them, so lip sync cannot be held; this is how you get
+    # the speakers for music and the laptop back for anything with faces in it.
+    if [ "$(pactl get-default-sink 2>/dev/null)" = "$OUT" ]; then to=$(other_sink); else to=$OUT; fi
+    [ -n "$to" ] || { echo "sidecar: no other output to switch to" >&2; exit 1; }
+    pactl set-default-sink "$to" >/dev/null 2>&1
+    # Move real application streams only. A filter chain's own output is a sink input
+    # too, and moving that rewires the processing instead of the audio.
+    pactl list sink-inputs 2>/dev/null | awk '
+      /^Sink Input #/ {id = substr($3, 2)}
+      /application\.name = / { a = $0; sub(/.*application\.name = "/, "", a); sub(/"$/, "", a)
+        if (a != "EasyEffects") print id }' | while read -r i; do
+      pactl move-sink-input "$i" "$to" >/dev/null 2>&1
+    done
+    if [ "$to" = "$OUT" ]; then w="the tablet"; else w=$(echo "$to" | sed 's/.*HiFi__//;s/__sink$//'); fi
+    echo "sound: $w"
+    # Bound to a key it runs with nobody watching the terminal, so say it on screen.
+    command -v notify-send >/dev/null && notify-send -t 1500 -i audio-speakers "Sound: $w" ;;
+  audio-delay)
+    # The player holds three packets of ABUF each plus a hardware buffer, so the delay
+    # you hear is roughly three times this number. Too low and sound runs ahead of the
+    # picture, too high and it trails. Ears are the only instrument for this.
+    [ -n "${2:-}" ] || { echo "usage: sidecar-display audio-delay <ms>   (now: $ABUF)" >&2; exit 2; }
+    # Go through audio_up rather than straight to play, or every tweak leaves the
+    # player's last socket behind filling with audio nobody reads.
+    ABUF=$2; audio_up && play
+    echo "buffer now ${ABUF}ms, so roughly $((ABUF * 3))ms behind. Keep it with:"
+    echo "  SIDECAR_AUDIO_BUFFER_MS=$ABUF   in ~/.config/sidecar-display/config" ;;
   state)
     # One word, for the bar widget to poll cheaply.
     if ! plugged; then echo away
@@ -318,5 +348,5 @@ case "${1:-}" in
         || echo "desktop output:  $(pactl get-default-sink 2>/dev/null | sed 's/.*HiFi__/…/')"
     fi
     echo "tablet desktops: $WS_SET" ;;
-  *) echo "usage: sidecar-display {up|down|watch|selfcheck|status|state}" >&2; exit 2 ;;
+  *) echo "usage: sidecar-display {up|down|watch|selfcheck|status|state|audio-toggle|audio-delay <ms>}" >&2; exit 2 ;;
 esac

@@ -168,6 +168,8 @@ sidecar-display selfcheck   # the twelve assertions, needs the tablet
 ./test-reconcile.sh         # does it recover on its own? all faked, safe anywhere
 sidecar-display up          # do it by hand
 sidecar-display down
+sidecar-display audio-toggle  # sound to the tablet or back to the laptop
+sidecar-display audio-delay 160
 ```
 
 ## How it works
@@ -194,6 +196,13 @@ The tablet's speakers are usually better than a laptop's, so the tablet can be a
 device as well as a screen. It shows up in the desktop's output list as **Sidecar**, next
 to your speakers, and you pick it the same way you would pick a monitor's speakers.
 
+`SUPER + SHIFT + T` throws the sound between the tablet and the laptop and says which on
+screen. Bind it yourself in `~/.config/hypr/bindings.lua`:
+
+```lua
+o.bind("SUPER + SHIFT + T", "Sound to tablet", "sidecar-display audio-toggle")
+```
+
 It needs one app installed on the tablet: [Simple Protocol
 Player](https://github.com/kaytat/SimpleProtocolPlayer), which plays uncompressed PCM off a
 socket. Android will not act as a USB speaker on its own without root, so something has to
@@ -209,11 +218,16 @@ and no encoding delay to pay for.
 
 Three things are less obvious than they look.
 
-- **Audio arrives early, so it is deliberately held back.** The picture goes through
-  capture, encode, a socket and a decode; sound goes almost straight down the wire. Left
-  alone the sound runs ahead of the video. `SIDECAR_AUDIO_BUFFER_MS` delays the audio to
-  meet it, and 250ms is what matched here. Raise it if sound still leads, lower it if sound
-  now lags. This is the only dial worth touching.
+- **Lip sync cannot be held, and no setting fixes that.** Sound and picture reach the
+  tablet by two unrelated paths with no shared clock and no timestamps between them, and
+  VNC re-encodes every frame whole so the picture's delay wobbles with how busy the screen
+  is. A fixed offset can only work against a fixed delay. scrcpy manages sync because it
+  carries both in one timestamped stream and resamples to hold them together; nothing here
+  does. Treat the tablet speakers as speakers: music, calls, background. Use
+  `SUPER + SHIFT + T` to throw the sound back to the laptop for anything with faces in it.
+  `sidecar-display audio-delay <ms>` exists to experiment, and the delay you hear is about
+  three times the number, because the player queues three packets of it. The default of
+  250ms is chosen for clean playback rather than for a sync that is not reachable.
 - **The server is reloaded before the player is started.** The player opens a new socket
   and abandons the old one without closing it, and every socket left behind quietly fills
   with audio nobody reads. Reloading is the only end of that we control.

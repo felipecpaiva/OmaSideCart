@@ -130,4 +130,14 @@ DEF=$(cat "$C/DEFAULT")
 [ ! -e "$C/SINK" ] && ok "the sidecar output was removed on unplug" || no "sidecar output left behind"
 
 kill $pid 2>/dev/null; wait $pid 2>/dev/null
+
+# The key you press every day: sound to the tablet, sound back to the laptop.
+echo sidecar > "$C/DEFAULT"
+bash "${1:-bin/sidecar-display}" audio-toggle >/dev/null 2>&1
+[ "$(cat "$C/DEFAULT")" != sidecar ] && ok "the toggle sends sound back to the laptop" \
+  || no "the toggle left sound on the tablet"
+bash "${1:-bin/sidecar-display}" audio-toggle >/dev/null 2>&1
+[ "$(cat "$C/DEFAULT")" = sidecar ] && ok "the toggle sends it to the tablet again" \
+  || no "the toggle would not go back to the tablet"
+
 exit $rc
