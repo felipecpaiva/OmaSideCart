@@ -110,6 +110,8 @@ SIDECAR_MODE=2960x1848@60         # your tablet's native resolution
 SIDECAR_SCALE=2                   # 2 suits a high-density tablet, 1 a low-density one
 SIDECAR_WS_SET="6 7 8 9 10"       # desktops that belong to the tablet
 SIDECAR_LAPTOP_WS_SET="1 2 3 4 5" # desktops pinned to the laptop
+SIDECAR_FPS=60                    # see the note on frame rate below
+SIDECAR_VIEWER=com.gaurav.avnc    # the tablet app, restarted to force a reconnect
 ```
 
 `adb` has to be reachable. If it is not on `PATH` for systemd user services, give its full
@@ -208,9 +210,24 @@ either, which is why booting with the cable already in behaves the same as plugg
   | 1480x924 @ 60fps | 1.36 Mpx | 19% of one core |
 
   A **still** screen costs nothing at all: zero frames, zero CPU. Only motion is expensive.
-  The default cap is 30fps (`SIDECAR_FPS`), because the frames arrive at 30 anyway and 60
-  just doubles the work. Halving the resolution is the biggest lever left, at the cost of
-  the tablet upscaling, which looks noticeably soft.
+  Halving the resolution is the biggest lever left, at the cost of the tablet upscaling,
+  which looks noticeably soft.
+- **The frame cap should be 60, and going past it is not worth it.** What you see is
+  governed by the content: a 30fps video looks like 30fps whatever the cap is set to, which
+  is what made an earlier reading of "30 is free" look true when it was only true of the
+  clip being watched at the time. Measured on a 1080p60 video played full screen:
+
+  | Cap | Load | Throughput | wayvnc CPU |
+  |---|---|---|---|
+  | 60 | video | 82 Mbps | 22% of one core |
+  | 120 | video | 102 Mbps | 62% of one core |
+  | 120 | scrolling and dragging | 83 Mbps | 71% of one core |
+
+  Hyprland will happily give a headless output 120Hz, and the tablet panel is 120Hz, so the
+  ceiling is real rather than imposed. It is still not worth taking. Tripling the CPU bought
+  24% more data and nothing anyone could see, because above the content's own frame rate
+  most of the work is rescanning frames that did not change. On a thin laptop that is
+  sustained heat for no gain.
 - **`wayvnc --gpu` does nothing here.** wayvnc can do H.264 and is linked for it, but the
   *client* picks the encoding and AVNC negotiates `tight` (JPEG on the CPU). A server flag
   cannot override a client that never asks.

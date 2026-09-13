@@ -34,7 +34,7 @@ case "\$1 \$2" in
   "reverse --list") [ -e $C/TUNNEL ] && echo "host tcp:5900 tcp:5900" ;;
   "reverse --remove") rm -f $C/TUNNEL ;;
   "reverse tcp:5900") touch $C/TUNNEL ;;
-  "shell am") echo show >> $C/SHOW_LOG ;;
+  "shell am") [ "\$3" = start ] && echo show >> $C/SHOW_LOG ;;
 esac
 exit 0
 SH

@@ -22,7 +22,8 @@ LAPTOP=${SIDECAR_LAPTOP:-eDP-1}            # your built-in screen, from `hyprctl
 MODE=${SIDECAR_MODE:-2960x1848@60}
 SCALE=${SIDECAR_SCALE:-2}
 PORT=${SIDECAR_PORT:-5900}
-FPS=${SIDECAR_FPS:-30}                       # 30 is plenty for a desktop; 60 doubles the data for no gain
+FPS=${SIDECAR_FPS:-60}                     # see the note on frame rate in the README
+VIEWER=${SIDECAR_VIEWER:-com.gaurav.avnc}  # the tablet app, restarted to force a reconnect
 WS_SET=${SIDECAR_WS_SET:-"6 7 8 9 10"}     # desktops that belong to the tablet
 LAPTOP_WS_SET=${SIDECAR_LAPTOP_WS_SET:-"1 2 3 4 5"}  # desktops pinned to the laptop
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/sidecar-display"
@@ -103,6 +104,10 @@ up() {
 # and the tablet may be showing something else because that is what the user wanted.
 show() {
   "$ADB" shell input keyevent KEYCODE_WAKEUP >/dev/null 2>&1
+  # Stop the viewer first. Handing the link to an app that is already open only raises the
+  # window it has, which is the session that just died, so nothing reconnects and the tablet
+  # sits on a dead screen looking like the stream is broken.
+  [ -n "$VIEWER" ] && "$ADB" shell am force-stop "$VIEWER" >/dev/null 2>&1
   "$ADB" shell am start -a android.intent.action.VIEW -d "vnc://127.0.0.1:$PORT" >/dev/null 2>&1
 }
 
