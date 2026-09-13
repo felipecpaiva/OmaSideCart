@@ -112,6 +112,10 @@ SIDECAR_WS_SET="6 7 8 9 10"       # desktops that belong to the tablet
 SIDECAR_LAPTOP_WS_SET="1 2 3 4 5" # desktops pinned to the laptop
 SIDECAR_FPS=60                    # see the note on frame rate below
 SIDECAR_VIEWER=com.gaurav.avnc    # the tablet app, restarted to force a reconnect
+SIDECAR_AUDIO=1                   # 0 leaves the tablet speakers out of it entirely
+SIDECAR_AUDIO_PORT=5901
+SIDECAR_AUDIO_BUFFER_MS=250       # see Sound, this is what lines audio up with the picture
+SIDECAR_AUDIO_PLAYER=com.kaytat.simpleprotocolplayer
 ```
 
 `adb` has to be reachable. If it is not on `PATH` for systemd user services, give its full
@@ -183,6 +187,39 @@ sidecar-display down
 There is no state file. The compositor is the only thing that remembers where a desktop
 lives, so there is nothing that can drift out of step with it. The watcher remembers nothing
 either, which is why booting with the cable already in behaves the same as plugging it in.
+
+## Sound
+
+The tablet's speakers are usually better than a laptop's, so the tablet can be an output
+device as well as a screen. It shows up in the desktop's output list as **Sidecar**, next
+to your speakers, and you pick it the same way you would pick a monitor's speakers.
+
+It needs one app installed on the tablet: [Simple Protocol
+Player](https://github.com/kaytat/SimpleProtocolPlayer), which plays uncompressed PCM off a
+socket. Android will not act as a USB speaker on its own without root, so something has to
+receive the audio. Install it and nothing else: the watcher starts it, points it at the
+stream and stops it again, all without bringing it to the front, so the tablet carries on
+showing your desktop while it plays.
+
+How it fits together. A null sink named `sidecar` collects whatever the desktop sends to
+it. `module-simple-protocol-tcp` serves that sink's monitor as raw PCM on loopback only,
+and a second `adb reverse` tunnel carries it down the same cable as the picture. Raw PCM
+costs 1.5 Mbps, which is nothing beside the 82 Mbps the screen uses, so there is no codec
+and no encoding delay to pay for.
+
+Three things are less obvious than they look.
+
+- **Audio arrives early, so it is deliberately held back.** The picture goes through
+  capture, encode, a socket and a decode; sound goes almost straight down the wire. Left
+  alone the sound runs ahead of the video. `SIDECAR_AUDIO_BUFFER_MS` delays the audio to
+  meet it, and 250ms is what matched here. Raise it if sound still leads, lower it if sound
+  now lags. This is the only dial worth touching.
+- **The server is reloaded before the player is started.** The player opens a new socket
+  and abandons the old one without closing it, and every socket left behind quietly fills
+  with audio nobody reads. Reloading is the only end of that we control.
+- **Unplugging hands the desktop back before the sink disappears.** Remove the output while
+  it is still the chosen one and the desktop is left pointing at a device that no longer
+  exists, which is silence everywhere with nothing visibly wrong.
 
 ## When something is wrong
 

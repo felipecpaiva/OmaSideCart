@@ -24,6 +24,10 @@ SCALE=${SIDECAR_SCALE:-2}
 PORT=${SIDECAR_PORT:-5900}
 FPS=${SIDECAR_FPS:-60}                     # see the note on frame rate in the README
 VIEWER=${SIDECAR_VIEWER:-com.gaurav.avnc}  # the tablet app, restarted to force a reconnect
+AUDIO=${SIDECAR_AUDIO:-1}                  # 0 leaves the tablet speakers out of it entirely
+APORT=${SIDECAR_AUDIO_PORT:-5901}
+ABUF=${SIDECAR_AUDIO_BUFFER_MS:-250}       # the tablet runs early without this, see the README
+APLAYER=${SIDECAR_AUDIO_PLAYER:-com.kaytat.simpleprotocolplayer}
 WS_SET=${SIDECAR_WS_SET:-"6 7 8 9 10"}     # desktops that belong to the tablet
 LAPTOP_WS_SET=${SIDECAR_LAPTOP_WS_SET:-"1 2 3 4 5"}  # desktops pinned to the laptop
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/sidecar-display"
@@ -36,10 +40,14 @@ mkdir -p "$STATE"
 
 [ -n "$SERIAL" ] || { echo "sidecar-display: set SIDECAR_SERIAL (see README)" >&2; exit 2; }
 
+# Where the kernel lists USB devices. Only the tests point this anywhere else, so they
+# can take the cable out without anyone having to walk over and take the cable out.
+SYSFS=${SIDECAR_SYSFS:-/sys/bus/usb/devices}
+
 # Match the serial, not the interface or port: both change between USB sockets.
 plugged() {
   local f
-  for f in /sys/bus/usb/devices/*/serial; do
+  for f in "$SYSFS"/*/serial; do
     [ -r "$f" ] && [ "$(cat "$f" 2>/dev/null)" = "$SERIAL" ] && return 0
   done
   return 1
@@ -55,6 +63,23 @@ streaming() { pgrep -x wayvnc >/dev/null; }
 viewing() { [ -n "$(ss -tnH state established "sport = :$PORT" 2>/dev/null)" ]; }
 # What "up" means, read off the system rather than remembered from the last pass.
 ready() { has_out && streaming && tunnel_open; }
+
+# The tablet speakers. A null sink collects whatever the desktop sends here, and its
+# monitor is served as raw PCM down a second tunnel to a player app on the tablet.
+sink_up() { pactl list short sinks 2>/dev/null | awk -v o="$OUT" '$2==o{f=1} END{exit !f}'; }
+serving() { pactl list short modules 2>/dev/null | grep -q "simple-protocol-tcp.*port=$APORT"; }
+atunnel_open() { "$ADB" reverse --list 2>/dev/null | grep -q "tcp:$APORT tcp:$APORT"; }
+# One established socket means the player is really pulling. It is also how we notice
+# the app dropped, because it never tells anyone.
+playing() { [ -n "$(ss -tnH state established "sport = :$APORT" 2>/dev/null)" ]; }
+audio_ready() { sink_up && serving && atunnel_open && playing; }
+
+# The highest priority output that is not ours, for handing the desktop back on unplug.
+other_sink() {
+  pactl -f json list sinks 2>/dev/null | jq -r --arg o "$OUT" \
+    '[.[]|select(.name!=$o)|select((.ports|length==0) or ([.ports[]?|.availability!="not available"]|any))
+      |{name, p:((.properties."priority.session"//"0")|tonumber)}]|sort_by(.p)|reverse|.[0].name // empty'
+}
 
 up() {
   local w
@@ -100,6 +125,57 @@ up() {
   return 0
 }
 
+audio_up() {
+  [ "$AUDIO" = 1 ] || return 0
+  # Dress the sink like a real display output. Without device.class and an icon the
+  # desktop does not treat it as a device you can pick, it is just a stray sink.
+  sink_up || pactl load-module module-null-sink sink_name="$OUT" \
+    sink_properties='device.description=Sidecar device.icon_name=video-display device.class=sound node.nick=Sidecar' >/dev/null 2>&1
+  sink_up || { echo "sidecar: audio sink was not created" >&2; return 1; }
+
+  "$ADB" reverse "tcp:$APORT" "tcp:$APORT" >/dev/null 2>&1
+  atunnel_open || { echo "sidecar: audio tunnel did not open" >&2; return 1; }
+
+  # Reload the server before pointing the player at it. The player abandons its old
+  # socket without closing it, and each one left behind quietly fills with audio that
+  # nobody is reading. Reloading is the only end of that we control.
+  local m; m=$(pactl list short modules 2>/dev/null | awk '/simple-protocol-tcp/{print $1}')
+  [ -n "$m" ] && pactl unload-module "$m" >/dev/null 2>&1
+  pactl load-module module-simple-protocol-tcp source="$OUT.monitor" rate=48000 format=s16le \
+    channels=2 record=true listen=127.0.0.1 port="$APORT" >/dev/null 2>&1
+  serving || { echo "sidecar: audio server did not start" >&2; return 1; }
+  return 0
+}
+
+# Tell the player to start pulling. It runs as a service, so the tablet keeps showing
+# the desktop rather than the player's own window.
+play() {
+  [ "$AUDIO" = 1 ] || return 0
+  "$ADB" shell am start-foreground-service -n "$APLAYER/.MusicService" \
+    -a "$APLAYER.action.PLAY" --es ip_addr 127.0.0.1 --ei audio_port "$APORT" \
+    --ei sample_rate 48000 --ez stereo true --ei buffer_ms "$ABUF" --ez retry true >/dev/null 2>&1
+}
+
+audio_down() {
+  [ "$AUDIO" = 1 ] || return 0
+  # Hand the desktop back to a real output before the sink goes. Unload it while it is
+  # still the default and the desktop is left pointing at a device that no longer
+  # exists, which is silence everywhere with nothing obviously wrong.
+  local back
+  if [ "$(pactl get-default-sink 2>/dev/null)" = "$OUT" ]; then
+    back=$(other_sink)
+    [ -n "$back" ] && pactl set-default-sink "$back" >/dev/null 2>&1
+  fi
+  "$ADB" shell am start-foreground-service -n "$APLAYER/.MusicService" \
+    -a "$APLAYER.action.STOP" >/dev/null 2>&1
+  local m
+  for m in $(pactl list short modules 2>/dev/null | awk '/simple-protocol-tcp|module-null-sink/{print $1}'); do
+    pactl unload-module "$m" >/dev/null 2>&1
+  done
+  "$ADB" reverse --remove "tcp:$APORT" >/dev/null 2>&1
+  return 0
+}
+
 # Point the tablet at the stream. Kept out of up() because up() now runs on every pass,
 # and the tablet may be showing something else because that is what the user wanted.
 show() {
@@ -118,6 +194,7 @@ down() {
   for w in $WS_SET; do
     hyprctl eval "hl.workspace_rule({workspace=\"$w\", monitor=\"$OUT\", persistent=false})" >/dev/null
   done
+  audio_down
   pkill -x wayvnc 2>/dev/null
   "$ADB" reverse --remove "tcp:$PORT" >/dev/null 2>&1
   has_out && hyprctl output remove "$OUT" >/dev/null   # Hyprland walks the desktops home
@@ -134,7 +211,7 @@ watch() {
   # viewer that goes away was closed on purpose and must not be dragged back.
   # ponytail: it stops asking after giveup seconds, so a cable plugged in only to
   # charge is left alone. Raise it if a slow tablet is still waking up past that.
-  local nap=2 seen=0 lastshow=0 since=0 gap=10 giveup=120 now
+  local nap=2 seen=0 lastshow=0 since=0 gap=10 giveup=120 now aseen=0 lastaudio=0
   trap 'down; exit 0' TERM INT
   while :; do
     if plugged; then
@@ -151,12 +228,19 @@ watch() {
         elif [ "$seen" = 0 ] && [ $((now - since)) -lt "$giveup" ] && [ $((now - lastshow)) -ge "$gap" ]; then
           show; lastshow=$now
         fi
+        # Audio gets the same treatment and the same ceiling. ponytail: once it has
+        # played, a drop is not chased, because the far more likely reason for silence
+        # is that the desktop was pointed at another output on purpose.
+        if audio_ready; then aseen=1
+        elif [ "$aseen" = 0 ] && [ $((now - since)) -lt "$giveup" ] && [ $((now - lastaudio)) -ge "$gap" ]; then
+          audio_up && play; lastaudio=$now
+        fi
       elif up; then
         # The stream was gone, so whatever the tablet was showing died with it. That is
         # not the user closing the viewer, and the give-up clock has to start again too.
-        seen=0; since=0; nap=2
+        seen=0; aseen=0; since=0; nap=2
       else
-        seen=0; since=0
+        seen=0; aseen=0; since=0
         # up said on stderr which step failed. Back off, or a machine that cannot
         # recover writes that same line into the journal every couple of seconds.
         nap=$((nap < 60 ? nap * 2 : nap))
@@ -165,7 +249,7 @@ watch() {
       # Not ready is not the same as nothing to tear down: a half up sidecar still
       # owns an output and a wayvnc.
       if has_out || streaming; then down; fi
-      seen=0; lastshow=0; since=0; nap=2
+      seen=0; aseen=0; lastshow=0; lastaudio=0; since=0; nap=2
     fi
     sleep "$nap"
   done
@@ -212,7 +296,7 @@ selfcheck() {
 }
 
 case "${1:-}" in
-  up) up && show ;;
+  up) up && { audio_up && play; show; } ;;
   down) down ;;
   watch) watch ;;
   selfcheck) selfcheck ;;
@@ -227,6 +311,12 @@ case "${1:-}" in
     has_out && echo "output:          up" || echo "output:          down"
     pgrep -x wayvnc >/dev/null && echo "wayvnc:          running" || echo "wayvnc:          stopped"
     "$ADB" reverse --list 2>/dev/null | grep -q "tcp:$PORT" && echo "tunnel:          open" || echo "tunnel:          closed"
+    if [ "$AUDIO" = 1 ]; then
+      playing && echo "audio:           playing on the tablet" \
+        || { serving && echo "audio:           served, no player attached" || echo "audio:           off"; }
+      [ "$(pactl get-default-sink 2>/dev/null)" = "$OUT" ] && echo "desktop output:  the tablet" \
+        || echo "desktop output:  $(pactl get-default-sink 2>/dev/null | sed 's/.*HiFi__/…/')"
+    fi
     echo "tablet desktops: $WS_SET" ;;
   *) echo "usage: sidecar-display {up|down|watch|selfcheck|status|state}" >&2; exit 2 ;;
 esac
