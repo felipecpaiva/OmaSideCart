@@ -45,9 +45,39 @@ case "\$1 \$2" in
 esac
 exit 0
 SH
-printf '#!/usr/bin/env bash\n[ -e %s/WAYVNC ]\n' "$C" > "$D/bin/pgrep"
-printf '#!/usr/bin/env bash\nrm -f %s/WAYVNC\n' "$C" > "$D/bin/pkill"
-printf '#!/usr/bin/env bash\ntouch %s/WAYVNC\n' "$C" > "$D/bin/setsid"
+# A real background process stands in for wayvnc, so PID ownership is exercised rather
+# than mimed with a marker file: the script records $! and later has to kill that PID.
+# Every stand-in registers itself, which is what lets the by-name fakes below behave the
+# way the real pgrep and pkill do. Registering before exec keeps $$ as the PID that
+# survives, so the register agrees with what the script recorded from $!.
+cat > "$D/bin/setsid" <<SH
+#!/usr/bin/env bash
+echo \$\$ >> $C/VNC_PIDS
+exec sleep 600
+SH
+# pgrep. With -F, the real thing tests that one PID, so a missing, empty or stale file
+# reads as not running, which is what stops a crash wedging the watcher. Without -F it
+# answers for ANY wayvnc on the machine: that is the old behaviour, modelled on purpose
+# so that reintroducing the by-name check makes the ownership test below fail.
+cat > "$D/bin/pgrep" <<SH
+#!/usr/bin/env bash
+f=""
+while [ \$# -gt 0 ]; do [ "\$1" = -F ] && { f=\$2; shift; }; shift; done
+if [ -n "\$f" ]; then
+  [ -r "\$f" ] && kill -0 "\$(cat "\$f" 2>/dev/null)" 2>/dev/null
+else
+  while read -r p; do kill -0 "\$p" 2>/dev/null && exit 0; done < $C/VNC_PIDS 2>/dev/null
+  exit 1
+fi
+SH
+# pkill, modelled honestly: it kills EVERY stand-in, not just the sidecar's, because that
+# is exactly what pkill -x wayvnc did. Reintroduce it and the foreign-stream test fails.
+cat > "$D/bin/pkill" <<SH
+#!/usr/bin/env bash
+echo "\$@" >> $C/PKILL_LOG
+while read -r p; do kill "\$p" 2>/dev/null; done < $C/VNC_PIDS 2>/dev/null
+exit 0
+SH
 cat > "$D/bin/ss" <<SH
 #!/usr/bin/env bash
 case "\$*" in
@@ -76,6 +106,10 @@ SH
 chmod +x "$D/bin"/*
 
 shows() { [ -e "$C/SHOW_LOG" ] && wc -l < "$C/SHOW_LOG" || echo 0; }
+PIDFILE="$D/state/sidecar-display/wayvnc.pid"
+# The stream is up when the PID the script recorded is still alive. Reading it the same
+# way the script does is the point: a marker file would not notice a wrong PID.
+vnc_up() { local p; p=$(cat "$PIDFILE" 2>/dev/null) && [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
 rc=0
 ok() { echo "PASS: $1"; }
 no() { echo "FAIL: $1"; rc=1; }
@@ -93,7 +127,7 @@ sleep 10
 
 rm -f "$C/FAIL_ADB"                 # adb comes up, the cable never moved
 sleep 22
-[ -e "$C/WAYVNC" ] && [ -e "$C/TUNNEL" ] && ok "it came up on its own, no replug" \
+vnc_up && [ -e "$C/TUNNEL" ] && ok "it came up on its own, no replug" \
   || no "still down after adb recovered, a replug would be needed"
 n=$(shows)
 [ "$n" -ge 1 ] && ok "it pointed the tablet at the stream ($n times)" \
@@ -109,7 +143,7 @@ rm -f "$C/VIEWING"; sleep 24
 # wayvnc crashing is not the user closing the viewer. The stream comes back under
 # the tablet, so it has to be pointed at it again or it sits blank until the cable moves.
 before=$(shows)
-rm -f "$C/WAYVNC"; sleep 26
+kill "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; sleep 26
 [ "$(shows)" -gt "$before" ] && ok "it reconnects the tablet after the stream came back" \
   || no "the stream came back but the tablet was left blank"
 
@@ -128,6 +162,20 @@ DEF=$(cat "$C/DEFAULT")
 [ "$DEF" != sidecar ] && ok "unplugging handed the desktop back to a real output ($DEF)" \
   || no "unplugged with the tablet still set as the output, so nothing plays anywhere"
 [ ! -e "$C/SINK" ] && ok "the sidecar output was removed on unplug" || no "sidecar output left behind"
+
+# Ownership. Someone starts a wayvnc of their own (remote desktop) with the tablet
+# unplugged. The watcher must not read it as a half-up sidecar and tear it down. This is
+# the bug that made vnc:// to this machine impossible while the service was running.
+"$D/bin/setsid" >/dev/null 2>&1 &
+foreign=$!
+sleep 7                             # three passes of the unplugged branch
+kill -0 "$foreign" 2>/dev/null && ok "a wayvnc it did not start is left alone" \
+  || no "it killed a wayvnc started for something else"
+[ ! -e "$C/PKILL_LOG" ] && ok "it never kills wayvnc by name" \
+  || no "something called pkill: $(cat "$C/PKILL_LOG")"
+[ ! -e "$PIDFILE" ] && ok "the pid file is cleared on the way down" \
+  || no "a stale pid file was left behind"
+kill "$foreign" 2>/dev/null
 
 kill $pid 2>/dev/null; wait $pid 2>/dev/null
 

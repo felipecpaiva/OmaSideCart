@@ -186,9 +186,18 @@ sidecar-display audio-delay 160
    cable, so the tablet reaches it at `vnc://127.0.0.1:5900`.
 4. On disconnect it stops the server, closes the tunnel, and removes the output.
 
-There is no state file. The compositor is the only thing that remembers where a desktop
-lives, so there is nothing that can drift out of step with it. The watcher remembers nothing
+The compositor is the only thing that remembers where a desktop lives, so there is nothing
+that can drift out of step with it. The watcher remembers nothing about the last pass
 either, which is why booting with the cable already in behaves the same as plugging it in.
+
+The one thing written down is `wayvnc.pid` in `$XDG_STATE_HOME/sidecar-display`, and it is
+there to answer "which wayvnc is mine", not to remember what was done. Identifying it by
+process name instead used to claim every wayvnc on the machine, so starting one of your own
+for remote desktop got it killed within two seconds. A stale file reads as not running, so
+a crash or a reboot cannot wedge anything.
+
+**It owns port 5900** (`SIDECAR_PORT`) and 5901 for audio. Another VNC server on this
+machine needs a different port, or whichever starts second fails to bind.
 
 ## Sound
 

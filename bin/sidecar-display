@@ -31,6 +31,7 @@ APLAYER=${SIDECAR_AUDIO_PLAYER:-com.kaytat.simpleprotocolplayer}
 WS_SET=${SIDECAR_WS_SET:-"6 7 8 9 10"}     # desktops that belong to the tablet
 LAPTOP_WS_SET=${SIDECAR_LAPTOP_WS_SET:-"1 2 3 4 5"}  # desktops pinned to the laptop
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/sidecar-display"
+PIDFILE="$STATE/wayvnc.pid"                 # which wayvnc is ours, see streaming()
 ADB=${ADB:-adb}                            # set a full path here if adb is not on PATH
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
@@ -57,7 +58,12 @@ has_out() { hyprctl monitors -j | jq -e --arg o "$OUT" 'any(.[]; .name==$o)' >/d
 ws_monitor() { hyprctl workspaces -j | jq -r --argjson w "$1" '.[]|select(.id==$w)|.monitor'; }
 ws_windows() { hyprctl workspaces -j | jq -r --argjson w "$1" '.[]|select(.id==$w)|.windows // 0'; }
 tunnel_open() { "$ADB" reverse --list 2>/dev/null | grep -q "tcp:$PORT tcp:$PORT"; }
-streaming() { pgrep -x wayvnc >/dev/null; }
+# Ours, by PID. Matching on the process name instead would claim any wayvnc on the
+# machine, and the unplugged branch of watch() would then tear down a wayvnc someone
+# started for remote desktop. -F holds the test to that one PID, and reports a missing,
+# stale, or recycled-onto-something-else file as not streaming, so a crash or a reboot
+# cannot wedge the watcher.
+streaming() { pgrep -x wayvnc -F "$PIDFILE" >/dev/null 2>&1; }
 # The tablet only has the picture while its viewer holds the VNC socket open. Nothing
 # else here tells a viewer that is showing apart from one the user has closed.
 viewing() { [ -n "$(ss -tnH state established "sport = :$PORT" 2>/dev/null)" ]; }
@@ -119,7 +125,13 @@ up() {
   "$ADB" reverse "tcp:$PORT" "tcp:$PORT" >/dev/null 2>&1
   tunnel_open || { echo "sidecar: adb tunnel did not open" >&2; return 1; }
 
-  streaming || setsid wayvnc --output="$OUT" --max-fps="$FPS" --render-cursor 127.0.0.1 "$PORT" >"$STATE/wayvnc.log" 2>&1 9>&- &
+  # Record the PID as we start it. setsid execs rather than forks here (this shell has
+  # job control off, so the background child is not a process group leader), which is
+  # what makes $! the wayvnc PID and not a wrapper's.
+  if ! streaming; then
+    setsid wayvnc --output="$OUT" --max-fps="$FPS" --render-cursor 127.0.0.1 "$PORT" >"$STATE/wayvnc.log" 2>&1 9>&- &
+    echo $! > "$PIDFILE"
+  fi
   n=0; until streaming || [ $n -ge 20 ]; do sleep 0.1; n=$((n+1)); done
   streaming || { echo "sidecar: wayvnc did not start" >&2; return 1; }
   return 0
@@ -195,7 +207,10 @@ down() {
     hyprctl eval "hl.workspace_rule({workspace=\"$w\", monitor=\"$OUT\", persistent=false})" >/dev/null
   done
   audio_down
-  pkill -x wayvnc 2>/dev/null
+  # Only ever the one we started. streaming() has already checked the PID is alive and
+  # is still wayvnc, so this cannot land on a recycled PID.
+  streaming && kill "$(cat "$PIDFILE")" 2>/dev/null
+  rm -f "$PIDFILE"
   "$ADB" reverse --remove "tcp:$PORT" >/dev/null 2>&1
   has_out && hyprctl output remove "$OUT" >/dev/null   # Hyprland walks the desktops home
   return 0
@@ -261,7 +276,7 @@ selfcheck() {
   up || { echo "FAIL: up"; return 1; }
   hyprctl monitors -j | jq -e --arg o "$OUT" --argjson w "${MODE%%x*}" 'any(.[]; .name==$o and .width==$w)' >/dev/null \
     && echo "PASS: $OUT is ${MODE%%x*} wide" || { echo "FAIL: $OUT wrong width"; rc=1; }
-  pgrep -x wayvnc >/dev/null && echo "PASS: wayvnc is streaming" || { echo "FAIL: wayvnc not running"; rc=1; }
+  streaming && echo "PASS: wayvnc is streaming" || { echo "FAIL: wayvnc not running"; rc=1; }
   ss -tlnp 2>/dev/null | grep -q "127.0.0.1:$PORT" && echo "PASS: wayvnc is loopback-only" || { echo "FAIL: wayvnc not on loopback"; rc=1; }
   "$ADB" reverse --list 2>/dev/null | grep -q "tcp:$PORT tcp:$PORT" && echo "PASS: adb tunnel is open" || { echo "FAIL: no adb tunnel"; rc=1; }
 
@@ -276,7 +291,7 @@ selfcheck() {
   [ "$(ws_monitor "$probe")" = "$LAPTOP" ] && [ "$(ws_windows "$probe")" -gt 0 ] \
     && echo "PASS: it came home on unplug, windows intact" || { echo "FAIL: on unplug it is on $(ws_monitor "$probe") with $(ws_windows "$probe") windows"; rc=1; }
   has_out && { echo "FAIL: output still there"; rc=1; } || echo "PASS: output removed"
-  pgrep -x wayvnc >/dev/null && { echo "FAIL: wayvnc still running"; rc=1; } || echo "PASS: wayvnc stopped"
+  streaming && { echo "FAIL: wayvnc still running"; rc=1; } || echo "PASS: wayvnc stopped"
   # A running watcher re-asserts the tunnel every couple of seconds while the
   # tablet is plugged in, so a simulated unplug can never leave it closed. On a
   # real unplug it does close, because then the watcher sees the device is gone.
@@ -333,13 +348,13 @@ case "${1:-}" in
   state)
     # One word, for the bar widget to poll cheaply.
     if ! plugged; then echo away
-    elif has_out && pgrep -x wayvnc >/dev/null; then echo streaming
+    elif has_out && streaming; then echo streaming
     else echo plugged
     fi ;;
   status)
     plugged && echo "tablet:          plugged" || echo "tablet:          unplugged"
     has_out && echo "output:          up" || echo "output:          down"
-    pgrep -x wayvnc >/dev/null && echo "wayvnc:          running" || echo "wayvnc:          stopped"
+    streaming && echo "wayvnc:          running" || echo "wayvnc:          stopped"
     "$ADB" reverse --list 2>/dev/null | grep -q "tcp:$PORT" && echo "tunnel:          open" || echo "tunnel:          closed"
     if [ "$AUDIO" = 1 ]; then
       playing && echo "audio:           playing on the tablet" \
